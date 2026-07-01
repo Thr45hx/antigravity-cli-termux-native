@@ -11,13 +11,13 @@ Google ships Antigravity CLI only as a **glibc-dynamic Go binary** for `linux_ar
 | # | Problem | Fix |
 |---|---------|-----|
 | 1 | **2 MB-aligned segments.** Go ships `PT_LOAD` segments with `p_align = 0x200000`; Termux's glibc loader can't map them → `SIGSEGV` at *"generating link map"*. | `fix-align.py` rewrites the oversized `p_align` fields down to page size (`0x1000`). Safe: 2 MB-congruent ⇒ page-congruent. |
-| 2 | **patchelf corrupts Go binaries.** The usual "patchelf the interpreter to Termux's glibc loader" trick crashes the Go binary. | Don't patchelf. Invoke the glibc loader **directly**: `ld.so --library-path … ./agy`, leaving the bytes untouched. |
-| 3 | **Self-update bricks the system.** `agy` self-updates by overwriting `/proc/self/exe`. Run via `ld.so agy`, that's the *loader* → an update overwrites `ld-linux-aarch64.so.1` and bricks **every** glibc program. | Run `agy` through a **private, disposable copy** of the loader (`~/agents/antigravity/ld.so`). A self-update clobbers the throwaway; the launcher heals it next run. |
-| 4 | **DNS + TLS fail.** Go's pure resolver reads `/etc/resolv.conf` via a raw syscall (absent on Termux) → dead `[::1]:53`; and Go can't find CA certs. | Launcher auto-detects DNS (see below). `SSL_CERT_FILE` points TLS at Termux's CA bundle. |
+| 2 | **patchelf corrupts Go binaries.** The usual "patchelf the interpreter" trick crashes the Go binary. | Don't patchelf. Invoke the glibc loader **directly**: `ld.so --library-path … ./agy`. |
+| 3 | **Self-update bricks the system.** `agy` self-updates by overwriting `/proc/self/exe` — which, run via `ld.so agy`, is the *loader*. | Run `agy` through a **private disposable copy** of the loader (`~/agents/antigravity/ld.so`); a self-update clobbers the throwaway, healed next run. |
+| 4 | **DNS + TLS fail.** Go's pure resolver reads `/etc/resolv.conf` via a raw syscall (absent on Termux) → dead `[::1]:53`; and Go can't find CA certs. | Go's pure resolver (`GODEBUG=netdns=go`) reads a resolv file whose **path is byte-patched into the binary** — see DNS below. `SSL_CERT_FILE` points TLS at Termux's CA bundle. |
 
 ## Requirements
 
-- Termux on **aarch64 / arm64**
+- Termux on **aarch64 / arm64** (storage access for the no-root DNS path: `termux-setup-storage`)
 - Internet on first run
 
 ## Install
@@ -40,32 +40,33 @@ Then sign in:
 agy
 ```
 
-## DNS: native (rooted) or userland fallback — auto-detected
+## DNS: sdcard (no root) or module (root) — auto-detected
 
-The launcher picks the DNS path automatically:
+No root required. The launcher points Go's pure resolver at a resolv file by swapping the binary's hardcoded 16-byte path in place (`/etc/resolv.conf` and `/sdcard/.grokdns` are both exactly 16 bytes):
 
-- **Native (rooted):** if a real `/etc/resolv.conf` exists — e.g. a systemless root module that mounts `/system/etc/resolv.conf` (since `/etc → /system/etc`) — Go's default resolver reads it directly, with **zero** `GODEBUG`/shim, on the pristine binary. Cleanest path.
-- **Fallback (default / non-root):** otherwise it forces glibc's `cgo` resolver + an `LD_PRELOAD` shim that redirects `/etc/resolv.conf`. **No root required** — works out of the box.
+- **No root (default):** path → `/sdcard/.grokdns`, seeded with `8.8.8.8 / 8.8.4.4`. Zero root, zero proot.
+- **Rooted:** if a real `/etc/resolv.conf` exists (e.g. a systemless module mounting `/system/etc/resolv.conf`, since `/etc → /system/etc`), the path is left native and the **pristine** binary resolves directly.
 
-So rooted users get the pristine path; everyone else just works.
+The mode is re-applied automatically on a mode change or a self-update, so it just keeps working.
 
 ## Install layout
 
 ```
 ~/agents/antigravity/
-├── agy           # Antigravity CLI binary (segments re-aligned)
+├── agy           # Antigravity CLI binary (segments re-aligned; resolv path set per mode)
 ├── ld.so         # private disposable glibc loader (self-update sacrifice)
 ├── fix-align.py
+├── agy-dns.py    # sets the binary's 16-byte resolv path: native | sdcard
 └── launcher.sh   # ← $PREFIX/bin/agy symlinks here
-$PREFIX/lib/claude-resolvfix.so   # DNS shim (fallback path; shared)
+/sdcard/.grokdns                # nameservers (no-root mode only)
 ```
 
 ## Files
 
 - `install.sh` — one-command installer (pulls the glibc arm64 build from Google's release manifest, applies all four fixes)
-- `launcher.sh` → `$PREFIX/bin/agy` — runtime wrapper (align-heal + private loader + auto DNS + CA)
-- `fix-align.py` — the `p_align` rewriter (idempotent; runs each launch to survive self-updates)
-- `fix_resolv.c` — the `/etc/resolv.conf` `LD_PRELOAD` shim (fallback DNS), shared with [claude-code-termux-native](https://github.com/Thr45hx/claude-code-termux-native)
+- `launcher.sh` → `$PREFIX/bin/agy`
+- `fix-align.py` — the `p_align` rewriter
+- `agy-dns.py` — sets the binary's resolv path (`native`|`sdcard`)
 - `uninstall.sh`
 
 ## Uninstall
