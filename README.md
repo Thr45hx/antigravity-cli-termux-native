@@ -6,6 +6,12 @@ Google ships Antigravity CLI only as a **glibc-dynamic Go binary** for `linux_ar
 
 > Runtime only — no account data. First `agy` run does the Google sign-in; creds live in `~/.gemini/antigravity-cli/`.
 
+## Demo — Antigravity explaining its own install
+
+Asked how it's running, Antigravity inspects its own launcher on-device (Android 17, Pixel 9 Pro XL) and walks through the four fixes that make a 2 MB-aligned Go binary run native:
+
+![Antigravity explains its native install](screenshots/antigravity-explains-native.png)
+
 ## Why it's hard — and the four fixes
 
 | # | Problem | Fix |
@@ -74,6 +80,23 @@ The mode is re-applied automatically on a mode change or a self-update, so it ju
 ```bash
 bash uninstall.sh
 ```
+
+## Part of the native-Termux CLI family
+
+One-command **native, no-proot** installers for AI coding CLIs on Termux — same toolkit, one per agent:
+
+- [claude-code-termux-native](https://github.com/Thr45hx/claude-code-termux-native) — Claude Code
+- [antigravity-cli-termux-native](https://github.com/Thr45hx/antigravity-cli-termux-native) — Google Antigravity
+- [grok-cli-termux-native](https://github.com/Thr45hx/grok-cli-termux-native) — xAI Grok Build
+- [opencode-termux-native](https://github.com/Thr45hx/opencode-termux-native) — OpenCode
+- [copilot-cli-termux-native](https://github.com/Thr45hx/copilot-cli-termux-native) — GitHub Copilot
+
+## Notes
+
+- **AI-assisted:** built and reverse-engineered with AI help — a daily-driver, not a toy. Provided as-is.
+- **Tested on:** Android 17, rooted **Pixel 9 Pro XL** (Tensor G4, aarch64).
+- **Root / no-root:** **Auto-detected** — no-root uses the sdcard byte-patch, rooted uses a systemless resolv module (pristine binary).
+- **License:** [MIT](./LICENSE).
 
 ---
 
