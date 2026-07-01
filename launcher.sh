@@ -7,11 +7,12 @@
 #      background self-update re-downloads a fresh (2 MB-aligned) binary.
 #   2) run it via the glibc loader *directly* — patchelf corrupts Go binaries,
 #      so we leave the bytes untouched and pass --library-path instead.
-#   3) DNS: force Go's cgo/glibc resolver (GODEBUG=netdns=cgo) so resolv.conf
-#      reads pass through libc, where claude-resolvfix.so redirects them. Go's
-#      default pure resolver uses raw syscalls the LD_PRELOAD shim can't catch,
-#      and falls back to a dead [::1]:53. SSL_CERT_FILE aims Go's TLS at Termux's
-#      CA bundle (Go otherwise looks only in glibc paths that don't exist here).
+#   3) DNS: if a native /etc/resolv.conf exists (e.g. a systemless root module),
+#      Go's default resolver reads it directly — nothing to force. Otherwise fall
+#      back to GODEBUG=netdns=cgo (glibc resolver) + the claude-resolvfix.so shim
+#      that redirects resolv.conf reads (Go's pure resolver uses raw syscalls the
+#      shim can't catch and dies on [::1]:53). SSL_CERT_FILE aims TLS at Termux's
+#      CA bundle either way (Go looks in glibc paths that don't exist here).
 PREFIX="/data/data/com.termux/files/usr"
 DIR="$HOME/agents/antigravity"
 BIN="$DIR/agy"
@@ -29,5 +30,12 @@ python3 "$DIR/fix-align.py" "$BIN" 2>/dev/null || true
 if [ ! -f "$LDA" ] || [ "$(stat -c%s "$LDA" 2>/dev/null)" != "$(stat -c%s "$REAL_GLD" 2>/dev/null)" ]; then
   cp -f "$REAL_GLD" "$LDA"
 fi
-exec env GODEBUG=netdns=cgo SSL_CERT_FILE="$PREFIX/etc/tls/cert.pem" \
-     LD_PRELOAD="$SHIM" "$LDA" --library-path "$PREFIX/glibc/lib" "$BIN" "$@"
+if [ -s /etc/resolv.conf ] && grep -q '^nameserver' /etc/resolv.conf 2>/dev/null; then
+  # native resolv.conf (root resolv module) — Go resolves directly, no hacks
+  exec env SSL_CERT_FILE="$PREFIX/etc/tls/cert.pem" \
+       "$LDA" --library-path "$PREFIX/glibc/lib" "$BIN" "$@"
+else
+  # fallback (no root / module not active): glibc cgo resolver + resolv shim
+  exec env GODEBUG=netdns=cgo SSL_CERT_FILE="$PREFIX/etc/tls/cert.pem" \
+       LD_PRELOAD="$SHIM" "$LDA" --library-path "$PREFIX/glibc/lib" "$BIN" "$@"
+fi
