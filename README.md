@@ -8,7 +8,7 @@ Google ships Antigravity CLI only as a **glibc-dynamic Go binary** for `linux_ar
 
 ## Demo — Antigravity explaining its own install
 
-Asked how it's running, Antigravity inspects its own launcher on-device (Android 17, Pixel 9 Pro XL) and walks through the four fixes that make a 2 MB-aligned Go binary run native:
+Asked how it's running, Antigravity inspects its own launcher on-device (Android 17, Pixel 9 Pro XL) and walks through the exact tricks that make a desktop-Linux Go binary run native on a phone:
 
 ![Antigravity explains its native install](screenshots/antigravity-explains-native.png)
 
@@ -18,13 +18,14 @@ Asked how it's running, Antigravity inspects its own launcher on-device (Android
 |---|---------|-----|
 | 1 | **2 MB-aligned segments.** Go ships `PT_LOAD` segments with `p_align = 0x200000`; Termux's glibc loader can't map them → `SIGSEGV` at *"generating link map"*. | `fix-align.py` rewrites the oversized `p_align` fields down to page size (`0x1000`). Safe: 2 MB-congruent ⇒ page-congruent. |
 | 2 | **patchelf corrupts Go binaries.** The usual "patchelf the interpreter" trick crashes the Go binary. | Don't patchelf. Invoke the glibc loader **directly**: `ld.so --library-path … ./agy`. |
-| 3 | **Self-update bricks the system.** `agy` self-updates by overwriting `/proc/self/exe` — which, run via `ld.so agy`, is the *loader*. | Run `agy` through a **private disposable copy** of the loader (`~/agents/antigravity/ld.so`); a self-update clobbers the throwaway, healed next run. |
-| 4 | **DNS + TLS fail.** Go's pure resolver reads `/etc/resolv.conf` via a raw syscall (absent on Termux) → dead `[::1]:53`; and Go can't find CA certs. | Go's pure resolver (`GODEBUG=netdns=go`) reads a resolv file whose **path is byte-patched into the binary** — see DNS below. `SSL_CERT_FILE` points TLS at Termux's CA bundle. |
+| 3 | **Self-update overwrites the loader.** `agy` self-updates by overwriting `/proc/self/exe` — which, run via `ld.so agy`, is the *loader*. | Run `agy` through a **private disposable copy** of the loader (`~/agents/antigravity/ld.so`). A self-update clobbers the throwaway (never the shared system loader), and the launcher **adopts** that downloaded binary as the new `agy` on the next run — so **auto-update stays ON and actually persists**. |
+| 4 | **Interactive helpers + DNS + TLS.** agy spawns glibc helper processes interactively that die with `libc.so: invalid ELF header`; Go's resolver can't reach DNS; Go can't find CA certs. | An `LD_PRELOAD` shim (`claude-resolvfix.so`) scrubs `LD_PRELOAD`/`LD_LIBRARY_PATH` so helpers load cleanly, and redirects `/etc/resolv.conf`. `GODEBUG=netdns=cgo` pins the glibc resolver so the shim catches it; `SSL_CERT_FILE` points TLS at Termux's CA bundle. |
 
 ## Requirements
 
-- Termux on **aarch64 / arm64** (storage access for the no-root DNS path: `termux-setup-storage`)
+- Termux on **aarch64 / arm64**
 - Internet on first run
+- `clang` (installed automatically — used once to build the tiny DNS shim)
 
 ## Install
 
@@ -46,33 +47,33 @@ Then sign in:
 agy
 ```
 
-## DNS: sdcard (no root) or module (root) — auto-detected
+## DNS: works with or without root
 
-No root required. The launcher points Go's pure resolver at a resolv file by swapping the binary's hardcoded 16-byte path in place (`/etc/resolv.conf` and `/sdcard/.grokdns` are both exactly 16 bytes):
+DNS goes through the `claude-resolvfix.so` shim, which redirects agy's `/etc/resolv.conf` reads to `$PREFIX/etc/resolv.conf`. The launcher keeps that target current every run:
 
-- **No root (default):** path → `/sdcard/.grokdns`, seeded with `8.8.8.8 / 8.8.4.4`. Zero root, zero proot.
-- **Rooted:** if a real `/etc/resolv.conf` exists (e.g. a systemless module mounting `/system/etc/resolv.conf`, since `/etc → /system/etc`), the path is left native and the **pristine** binary resolves directly.
+- **No root (default):** `$PREFIX/etc/resolv.conf` is seeded with `8.8.8.8 / 8.8.4.4`. Zero root, zero proot.
+- **Rooted:** if a real `/etc/resolv.conf` exists (e.g. a systemless module mounting `/system/etc/resolv.conf`, since `/etc → /system/etc`), the launcher **syncs it into the shim target** — so the module's nameservers are exactly what agy resolves through.
 
-The mode is re-applied automatically on a mode change or a self-update, so it just keeps working.
+The shim isn't only for DNS: its constructor scrubs the glibc loader vars so the helper processes agy spawns in interactive mode load cleanly (that's what fixes the `libc.so: invalid ELF header` crash).
 
 ## Install layout
 
 ```
 ~/agents/antigravity/
-├── agy           # Antigravity CLI binary (segments re-aligned; resolv path set per mode)
-├── ld.so         # private disposable glibc loader (self-update sacrifice)
-├── fix-align.py
-├── agy-dns.py    # sets the binary's 16-byte resolv path: native | sdcard
+├── agy           # Antigravity CLI binary (segments re-aligned)
+├── ld.so         # private disposable glibc loader (self-update sacrifice / adopt source)
+├── agy.bak       # last-good binary, kept when a self-update is adopted (rollback)
+├── fix-align.py  # the p_align rewriter
+├── fix_resolv.c  # DNS/env-scrub shim source (built once to $PREFIX/lib/claude-resolvfix.so)
 └── launcher.sh   # ← $PREFIX/bin/agy symlinks here
-/sdcard/.grokdns                # nameservers (no-root mode only)
 ```
 
 ## Files
 
-- `install.sh` — one-command installer (pulls the glibc arm64 build from Google's release manifest, applies all four fixes)
+- `install.sh` — one-command installer (pulls the glibc arm64 build from Google's release manifest, builds the shim, applies all four fixes)
 - `launcher.sh` → `$PREFIX/bin/agy`
 - `fix-align.py` — the `p_align` rewriter
-- `agy-dns.py` — sets the binary's resolv path (`native`|`sdcard`)
+- `fix_resolv.c` — the `LD_PRELOAD` DNS + env-scrub shim
 - `uninstall.sh`
 
 ## Uninstall
@@ -95,9 +96,9 @@ One-command **native, no-proot** installers for AI coding CLIs on Termux — sam
 
 - **AI-assisted:** built and reverse-engineered with AI help — a daily-driver, not a toy. Provided as-is.
 - **Tested on:** Android 17, rooted **Pixel 9 Pro XL** (Tensor G4, aarch64).
-- **Root / no-root:** **Auto-detected** — no-root uses the sdcard byte-patch, rooted uses a systemless resolv module (pristine binary).
+- **Root / no-root:** both supported — no-root seeds a resolv file; rooted syncs DNS from a systemless resolv module.
 - **License:** [MIT](./LICENSE).
 
 ---
 
-Unofficial — not affiliated with Google. Provided as-is, no warranty. `agy` self-updates in the background; the private-loader mechanism keeps that safe.
+Unofficial — not affiliated with Google. Provided as-is, no warranty. `agy` self-updates in the background; the private-loader + adopt mechanism keeps that safe and persistent.
